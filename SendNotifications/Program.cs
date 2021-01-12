@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
-using MySql.Data.MySqlClient;
 using System.Linq;
-using System.Net.Mail;
 using System.Net;
+using System.Net.Mail;
+using MySql.Data.MySqlClient;
 
 namespace SendNotifications
 {
@@ -14,7 +14,8 @@ namespace SendNotifications
         {
             Console.WriteLine("[{0}]: Send Notifications script starting...", DateTime.Now.ToString());
 
-            int timeInterval = Convert.ToInt32(Environment.GetEnvironmentVariable("TIME_INTERVAL"));
+            int lowerBound = Convert.ToInt32(Environment.GetEnvironmentVariable("LOWER_BOUND"));
+            int upperBound = Convert.ToInt32(Environment.GetEnvironmentVariable("UPPER_BOUND"));
 
             string connectionString = string.Format(
                 "server={0};user={1};password={2};port={3};database={4}",
@@ -32,7 +33,7 @@ namespace SendNotifications
             connection.Open();
             Console.WriteLine("[{0}]: Connection to MySQL successful!", DateTime.Now.ToString());
 
-            List<string> matchdays = GetMatchdaysForNotifications(timeInterval, connection);
+            List<string> matchdays = GetMatchdaysForNotifications(lowerBound, upperBound, connection);
 
             if (!matchdays.Any())
             {
@@ -52,15 +53,17 @@ namespace SendNotifications
                 Credentials = new NetworkCredential(fromAddress.Address, password)
             };
 
+            string emailType = Environment.GetEnvironmentVariable("EMAIL_TYPE");
+
             foreach (string matchday in matchdays)
             {
                 List<Tuple<string, string>> users = GetNotifyEmailMatchdays(connection, matchday);
-                string subject = GetSubject(timeInterval, matchday);
+                string subject = GetSubject(emailType, matchday);
 
                 foreach (var user in users)
                 {
                     var toAddress = new MailAddress(user.Item2, user.Item1);
-                    string body = GetBody(timeInterval, matchday, user.Item1);
+                    string body = GetBody(emailType, matchday, user.Item1);
 
                     using var message = new MailMessage(fromAddress, toAddress)
                     {
@@ -76,30 +79,26 @@ namespace SendNotifications
             connection.Close();
         }
 
-        private static string GetBody(int timeInterval, string matchday, string fullName)
+        private static string GetBody(string emailType, string matchday, string fullName)
         {
             string name = fullName.Split(' ')[0];
 
-            if (timeInterval == 1)
+            return emailType switch
             {
-                return "Hi " + name + "!<br><br>Betting round for matchday " + matchday + " is closing in less than one hour!<br>Access www.penalty.duckdns.org and hit play to submit your prediction!<br><br>Best of luck!<br><img src=\"https://i.imgur.com/DPEiu1c.png\" style=\"width:224px;height:62px;\">";
-            }
-            else
-            {
-                return "Hi " + name + "!<br><br>Last call for predictions for matchday " + matchday + ". You have until the first match starts to submit your predictions!<br>Access www.penalty.duckdns.org and hit play to submit your prediction!<br><br>Best of luck!<br><img src=\"https://i.imgur.com/DPEiu1c.png\" style=\"width:224px;height:62px;\">";
-            }
+                "DAILY" => "Hi " + name + "!<br><br>Last call for predictions for matchday " + matchday + ". You have until the first match starts to submit your predictions!<br>Access www.penalty.duckdns.org and hit play to submit your prediction!<br><br>Best of luck!<br><img src=\"https://i.imgur.com/DPEiu1c.png\" style=\"width:224px;height:62px;\">",
+                "HOURLY" => "Hi " + name + "!<br><br>Betting round for matchday " + matchday + " is closing in just a couple of hours!<br>Access www.penalty.duckdns.org and hit play to submit your prediction!<br><br>Best of luck!<br><img src=\"https://i.imgur.com/DPEiu1c.png\" style=\"width:224px;height:62px;\">",
+                _ => null,
+            };
         }
 
-        private static string GetSubject(int timeInterval, string matchday)
+        private static string GetSubject(string emailType, string matchday)
         {
-            if (timeInterval == 1)
+            return emailType switch
             {
-                return "Sure you don't want to play? Last chance!";
-            }
-            else
-            {
-                return "Last call on bets for matchday " + matchday + "!";
-            }
+                "DAILY" => "Last call on bets for matchday " + matchday + "!",
+                "HOURLY" => "Sure you don't want to play? Last chance!",
+                _ => null,
+            };
         }
 
         private static List<Tuple<string, string>> GetNotifyEmailMatchdays(MySqlConnection connection, string matchday)
@@ -124,14 +123,15 @@ namespace SendNotifications
             return users;
         }
 
-        private static List<string> GetMatchdaysForNotifications(int timeInterval, MySqlConnection connection)
+        private static List<string> GetMatchdaysForNotifications(int lowerBound, int upperBound, MySqlConnection connection)
         {
             MySqlCommand matchdaysForNotificationsCommand = new MySqlCommand("GetMatchdaysForNotifications", connection)
             {
                 CommandType = CommandType.StoredProcedure
             };
 
-            matchdaysForNotificationsCommand.Parameters.Add(new MySqlParameter("Hours", timeInterval));
+            matchdaysForNotificationsCommand.Parameters.Add(new MySqlParameter("LowerBound", lowerBound));
+            matchdaysForNotificationsCommand.Parameters.Add(new MySqlParameter("UpperBound", upperBound));
 
             MySqlDataReader matchdaysForNotificationsReader = matchdaysForNotificationsCommand.ExecuteReader();
 
