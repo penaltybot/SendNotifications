@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Mail;
+using System.Text;
 using MySql.Data.MySqlClient;
 
 namespace SendNotifications
@@ -12,71 +14,139 @@ namespace SendNotifications
     {
         public static void Main()
         {
-            Console.WriteLine("[{0}]: Send Notifications script starting...", DateTime.Now.ToString());
+            Directory.CreateDirectory(@"/logs");
 
-            int lowerBound = Convert.ToInt32(Environment.GetEnvironmentVariable("LOWER_BOUND"));
-            int upperBound = Convert.ToInt32(Environment.GetEnvironmentVariable("UPPER_BOUND"));
+            StringBuilder logOutput = new StringBuilder();
 
-            string connectionString = string.Format(
-                "server={0};user={1};password={2};port={3};database={4}",
-                new string[]
-                {
+            try
+            {
+                logOutput.AppendLine(String.Format("[{0}]       [-] Send Notifications script starting", DateTime.Now.ToString()));
+
+                int lowerBound = Convert.ToInt32(Environment.GetEnvironmentVariable("LOWER_BOUND"));
+                int upperBound = Convert.ToInt32(Environment.GetEnvironmentVariable("UPPER_BOUND"));
+
+                string connectionString = string.Format(
+                    "server={0};user={1};password={2};port={3};database={4}",
+                    new string[]
+                    {
                     Environment.GetEnvironmentVariable("DB_URL"),
                     Environment.GetEnvironmentVariable("DB_USER"),
                     Environment.GetEnvironmentVariable("DB_PASSWORD"),
                     Environment.GetEnvironmentVariable("DB_PORT"),
                     Environment.GetEnvironmentVariable("DB_DATABASE")
-                });
+                    });
 
-            Console.WriteLine("[{0}]: Connecting to MySQL...", DateTime.Now.ToString());
-            MySqlConnection connection = new MySqlConnection(connectionString);
-            connection.Open();
-            Console.WriteLine("[{0}]: Connection to MySQL successful!", DateTime.Now.ToString());
+                logOutput.AppendLine(String.Format("[{0}]       [-] Connecting to MySQL", DateTime.Now.ToString()));
+                MySqlConnection connection = new MySqlConnection(connectionString);
+                connection.Open();
+                logOutput.AppendLine(String.Format("[{0}]       [-] Connection to MySQL successful", DateTime.Now.ToString()));
 
-            List<string> matchdays = GetMatchdaysForNotifications(lowerBound, upperBound, connection);
+                logOutput.AppendLine(String.Format("[{0}]       [-] Getting matchdays for notifications", DateTime.Now.ToString()));
+                List<string> matchdays = GetMatchdaysForNotifications(lowerBound, upperBound, connection);
 
-            if (!matchdays.Any())
+                if (!matchdays.Any())
+                {
+                    logOutput.AppendLine(String.Format("[{0}]       [-] No notifications to be sent", DateTime.Now.ToString()));
+                    logOutput.AppendLine(String.Format("[{0}]       [-] Job finished", DateTime.Now.ToString()));
+                    return;
+                }
+
+                var fromAddress = new MailAddress(Environment.GetEnvironmentVariable("FROM_EMAIL"), Environment.GetEnvironmentVariable("FROM_NAME"));
+                string emailPassword = Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
+
+                var smtp = new SmtpClient
+                {
+                    Host = "smtp.gmail.com",
+                    Port = 587,
+                    EnableSsl = true,
+                    DeliveryMethod = SmtpDeliveryMethod.Network,
+                    UseDefaultCredentials = false,
+                    Credentials = new NetworkCredential(fromAddress.Address, emailPassword)
+                };
+
+                string emailType = Environment.GetEnvironmentVariable("EMAIL_TYPE");
+
+                logOutput.AppendLine(String.Format("[{0}]       [-] Sending notifications", DateTime.Now.ToString()));
+                foreach (string matchday in matchdays)
+                {
+                    List<Tuple<string, string>> users = GetNotifyEmailMatchdays(connection, matchday);
+                    string subject = GetSubject(emailType, matchday);
+
+                    foreach (var user in users)
+                    {
+                        var toAddress = new MailAddress(user.Item2, user.Item1);
+                        string body = GetBody(emailType, matchday, user.Item1);
+
+                        using var message = new MailMessage(fromAddress, toAddress)
+                        {
+                            Subject = subject,
+                            Body = body,
+                            IsBodyHtml = true
+                        };
+
+                        logOutput.AppendLine(String.Format("[{0}]       [+] Sending notification to '" + user.Item1 + "' for matchday '" + matchday + "'", DateTime.Now.ToString()));
+                        smtp.Send(message);
+                    }
+                }
+
+                logOutput.AppendLine(String.Format("[{0}]       [-] Closing connection to MySQL", DateTime.Now.ToString()));
+                connection.Close();
+                logOutput.AppendLine(String.Format("[{0}]       [-] Connection to MySQL successful closed", DateTime.Now.ToString()));
+                logOutput.AppendLine(String.Format("[{0}]       [-] Job finished", DateTime.Now.ToString()));
+            }
+            catch (Exception ex)
             {
-                return;
+                logOutput.AppendLine(String.Format("[{0}]       [!] Job failed with exception:", DateTime.Now.ToString()));
+                logOutput.AppendLine(ex.ToString());
             }
 
-            var fromAddress = new MailAddress(Environment.GetEnvironmentVariable("FROM_EMAIL"), Environment.GetEnvironmentVariable("FROM_NAME"));
-            string password = Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
+            ProcessLogs(logOutput.ToString());
+        }
 
-            var smtp = new SmtpClient
+        private static void ProcessLogs(string logOutput)
+        {
+            string logOutputPath = "/logs/log_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".log";
+
+            File.AppendAllText(logOutputPath, logOutput);
+
+            if (logOutput.Contains("[!]"))
             {
-                Host = "smtp.gmail.com",
-                Port = 587,
-                EnableSsl = true,
-                DeliveryMethod = SmtpDeliveryMethod.Network,
-                UseDefaultCredentials = false,
-                Credentials = new NetworkCredential(fromAddress.Address, password)
-            };
+                var fromAddress = Environment.GetEnvironmentVariable("FROM_EMAIL");
+                string operatorEmails = Environment.GetEnvironmentVariable("OPERATOR_EMAILS");
+                string emailPassword = Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
 
-            string emailType = Environment.GetEnvironmentVariable("EMAIL_TYPE");
-
-            foreach (string matchday in matchdays)
-            {
-                List<Tuple<string, string>> users = GetNotifyEmailMatchdays(connection, matchday);
-                string subject = GetSubject(emailType, matchday);
-
-                foreach (var user in users)
+                var smtp = new SmtpClient
                 {
-                    var toAddress = new MailAddress(user.Item2, user.Item1);
-                    string body = GetBody(emailType, matchday, user.Item1);
+                    Host = "smtp.gmail.com",
+                    Port = 587,
+                    EnableSsl = true,
+                    DeliveryMethod = SmtpDeliveryMethod.Network,
+                    UseDefaultCredentials = false,
+                    Credentials = new NetworkCredential(fromAddress, emailPassword)
+                };
 
-                    using var message = new MailMessage(fromAddress, toAddress)
-                    {
-                        Subject = subject,
-                        Body = body,
-                        IsBodyHtml = true
-                    };
+                using var message = new MailMessage(fromAddress, operatorEmails)
+                {
+                    Subject = "Errors in job!",
+                    Body = "Hi operators,<br><br>An error has occured in today's scheduled job!<br>Log file has been attached to this message.",
+                    IsBodyHtml = true,
+                };
 
-                    smtp.Send(message);
+                message.Attachments.Add(new Attachment(logOutputPath));
+
+                smtp.Send(message);
+            }
+
+            string[] files = Directory.GetFiles("/logs");
+
+            foreach (string file in files)
+            {
+                FileInfo fileInfo = new FileInfo(file);
+                if (fileInfo.LastAccessTime < DateTime.Now.AddMonths(-1))
+                {
+                    fileInfo.Delete();
                 }
             }
-
-            connection.Close();
         }
 
         private static string GetBody(string emailType, string matchday, string fullName)
