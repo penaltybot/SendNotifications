@@ -48,6 +48,8 @@ namespace SendNotifications
                 {
                     logOutput.AppendLine(String.Format("[{0}]       [-] No notifications to be sent", DateTime.Now.ToString()));
                     logOutput.AppendLine(String.Format("[{0}]       [-] Job finished", DateTime.Now.ToString()));
+                    ProcessLogs(logOutput.ToString());
+
                     return;
                 }
 
