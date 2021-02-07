@@ -22,9 +22,6 @@ namespace SendNotifications
             {
                 logOutput.AppendLine(String.Format("[{0}]       [-] Send Notifications script starting", DateTime.Now.ToString()));
 
-                int lowerBound = Convert.ToInt32(Environment.GetEnvironmentVariable("LOWER_BOUND"));
-                int upperBound = Convert.ToInt32(Environment.GetEnvironmentVariable("UPPER_BOUND"));
-
                 string connectionString = string.Format(
                     "server={0};user={1};password={2};port={3};database={4}",
                     new string[]
@@ -41,12 +38,12 @@ namespace SendNotifications
                 connection.Open();
                 logOutput.AppendLine(String.Format("[{0}]       [-] Connection to MySQL successful", DateTime.Now.ToString()));
 
-                logOutput.AppendLine(String.Format("[{0}]       [-] Getting matchdays for notifications", DateTime.Now.ToString()));
-                List<string> matchdays = GetMatchdaysForNotifications(lowerBound, upperBound, connection);
+                logOutput.AppendLine(String.Format("[{0}]       [-] Getting today's matches", DateTime.Now.ToString()));
+                string todaysMatches = TodaysMatches(connection);
 
-                if (!matchdays.Any())
+                if (String.IsNullOrEmpty(todaysMatches))
                 {
-                    logOutput.AppendLine(String.Format("[{0}]       [-] No notifications to be sent", DateTime.Now.ToString()));
+                    logOutput.AppendLine(String.Format("[{0}]       [-] No matches today", DateTime.Now.ToString()));
                     logOutput.AppendLine(String.Format("[{0}]       [-] Job finished", DateTime.Now.ToString()));
                     ProcessLogs(logOutput.ToString());
 
@@ -66,29 +63,24 @@ namespace SendNotifications
                     Credentials = new NetworkCredential(fromAddress.Address, emailPassword)
                 };
 
-                string emailType = Environment.GetEnvironmentVariable("EMAIL_TYPE");
-
                 logOutput.AppendLine(String.Format("[{0}]       [-] Sending notifications", DateTime.Now.ToString()));
-                foreach (string matchday in matchdays)
+                List<User> users = GetNotifyEmailMatchdays(connection);
+                string subject = "Apostas do dia";
+
+                foreach (var user in users)
                 {
-                    List<Tuple<string, string>> users = GetNotifyEmailMatchdays(connection, matchday);
-                    string subject = GetSubject(emailType, matchday);
+                    var toAddress = new MailAddress(user.Email, user.Name);
+                    string body = GetBody(user);
 
-                    foreach (var user in users)
+                    using var message = new MailMessage(fromAddress, toAddress)
                     {
-                        var toAddress = new MailAddress(user.Item2, user.Item1);
-                        string body = GetBody(emailType, matchday, user.Item1);
+                        Subject = subject,
+                        Body = body,
+                        IsBodyHtml = true
+                    };
 
-                        using var message = new MailMessage(fromAddress, toAddress)
-                        {
-                            Subject = subject,
-                            Body = body,
-                            IsBodyHtml = true
-                        };
-
-                        logOutput.AppendLine(String.Format("[{0}]       [+] Sending notification to '" + user.Item1 + "' for matchday '" + matchday + "'", DateTime.Now.ToString()));
-                        smtp.Send(message);
-                    }
+                    logOutput.AppendLine(String.Format("[{0}]       [+] Sending notification to '" + user.Name, DateTime.Now.ToString()));
+                    smtp.Send(message);
                 }
 
                 logOutput.AppendLine(String.Format("[{0}]       [-] Closing connection to MySQL", DateTime.Now.ToString()));
@@ -103,6 +95,26 @@ namespace SendNotifications
             }
 
             ProcessLogs(logOutput.ToString());
+        }
+
+        private static string TodaysMatches(MySqlConnection connection)
+        {
+            MySqlCommand todaysMatchesCommand = new MySqlCommand("TodaysMatches", connection)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+            MySqlDataReader todaysMatchesReader = todaysMatchesCommand.ExecuteReader();
+
+            string todaysMatches = null;
+            if (todaysMatchesReader.HasRows)
+            {
+                todaysMatchesReader.Read();
+                todaysMatches = Convert.ToString(todaysMatchesReader["TodaysMatches"]);
+            }
+
+            todaysMatchesReader.Close();
+
+            return todaysMatches;
         }
 
         private static void ProcessLogs(string logOutput)
@@ -151,43 +163,47 @@ namespace SendNotifications
             }
         }
 
-        private static string GetBody(string emailType, string matchday, string fullName)
+        private static string GetBody(User user)
         {
-            string name = fullName.Split(' ')[0];
+            string name = user.Name.Split(' ')[0];
 
-            return emailType switch
+            StringBuilder body = new StringBuilder();
+
+            body.Append("Olá " + name);
+
+            if (user.SendEmailReminder)
             {
-                "DAILY" => "Hi " + name + "!<br><br>Last call for predictions for matchday " + matchday + ". You have until the first match starts to submit your predictions!<br>Access www.penalty.duckdns.org and hit play to submit your prediction!<br><br>Best of luck!<br><img src=\"https://i.imgur.com/DPEiu1c.png\" style=\"width:224px;height:62px;\">",
-                "HOURLY" => "Hi " + name + "!<br><br>Betting round for matchday " + matchday + " is closing in just a couple of hours!<br>Access www.penalty.duckdns.org and hit play to submit your prediction!<br><br>Best of luck!<br><img src=\"https://i.imgur.com/DPEiu1c.png\" style=\"width:224px;height:62px;\">",
-                _ => null,
-            };
+
+            }
+
+            if (user.SendEmailChange)
+            {
+
+            }
+
+            return body.ToString();
         }
 
-        private static string GetSubject(string emailType, string matchday)
+        private static List<User> GetNotifyEmailMatchdays(MySqlConnection connection)
         {
-            return emailType switch
-            {
-                "DAILY" => "Last call on bets for matchday " + matchday + "!",
-                "HOURLY" => "Sure you don't want to play? Last chance!",
-                _ => null,
-            };
-        }
-
-        private static List<Tuple<string, string>> GetNotifyEmailMatchdays(MySqlConnection connection, string matchday)
-        {
-            MySqlCommand notifyEmailMatchdaysCommand = new MySqlCommand("GetNotifyEmailMatchdays", connection)
+            MySqlCommand notifyEmailMatchdaysCommand = new MySqlCommand("GetNotifyEmailUsers", connection)
             {
                 CommandType = CommandType.StoredProcedure
             };
 
-            notifyEmailMatchdaysCommand.Parameters.Add(new MySqlParameter("Matchday", matchday));
-
             MySqlDataReader notifyEmailMatchdaysReader = notifyEmailMatchdaysCommand.ExecuteReader();
 
-            List<Tuple<string, string>> users = new List<Tuple<string, string>>();
+            List<User> users = new List<User>();
             while (notifyEmailMatchdaysReader.Read())
             {
-                users.Add(new Tuple<string, string>(notifyEmailMatchdaysReader.GetString("Name"), notifyEmailMatchdaysReader.GetString("Email")));
+                users.Add(new User()
+                {
+                    Username = notifyEmailMatchdaysReader.GetString("UserName"),
+                    Name = notifyEmailMatchdaysReader.GetString("Name"),
+                    Email = notifyEmailMatchdaysReader.GetString("Email"),
+                    SendEmailReminder = Convert.ToBoolean(notifyEmailMatchdaysReader["SendEmailReminder"]),
+                    SendEmailChange = Convert.ToBoolean(notifyEmailMatchdaysReader["SendEmailChange"])
+                });
             }
 
             notifyEmailMatchdaysReader.Close();
@@ -216,6 +232,15 @@ namespace SendNotifications
             matchdaysForNotificationsReader.Close();
 
             return matchdays;
+        }
+
+        private class User
+        {
+            public string Username { get; set; }
+            public string Name { get; set; }
+            public string Email { get; set; }
+            public bool SendEmailReminder { get; set; }
+            public bool SendEmailChange { get; set; }
         }
     }
 }
