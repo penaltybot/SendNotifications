@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Mail;
+using System.Security.Cryptography;
 using System.Text;
 using MySql.Data.MySqlClient;
 
@@ -12,6 +12,12 @@ namespace SendNotifications
 {
     public class Program
     {
+        public static string EmailHeader = File.ReadAllText("/app/EmailHeader");
+        public static string EmailTable = File.ReadAllText("/app/EmailTable");
+        public static string EmailFooter = File.ReadAllText("/app/EmailFooter");
+
+        public static string BettingUrl;
+
         public static void Main()
         {
             Directory.CreateDirectory(@"/logs");
@@ -22,6 +28,7 @@ namespace SendNotifications
             {
                 logOutput.AppendLine(String.Format("[{0}]       [-] Send Notifications script starting", DateTime.Now.ToString()));
 
+                logOutput.AppendLine(String.Format("[{0}]       [-] Retrieving necessary environment variables", DateTime.Now.ToString()));
                 string connectionString = string.Format(
                     "server={0};user={1};password={2};port={3};database={4}",
                     new string[]
@@ -33,15 +40,22 @@ namespace SendNotifications
                     Environment.GetEnvironmentVariable("DB_DATABASE")
                     });
 
-                logOutput.AppendLine(String.Format("[{0}]       [-] Connecting to MySQL", DateTime.Now.ToString()));
-                MySqlConnection connection = new MySqlConnection(connectionString);
-                connection.Open();
-                logOutput.AppendLine(String.Format("[{0}]       [-] Connection to MySQL successful", DateTime.Now.ToString()));
+                BettingUrl = Environment.GetEnvironmentVariable("BETTING_URL");
+
+                logOutput.AppendLine(String.Format("[{0}]       [-] Opening read connection to MySQL", DateTime.Now.ToString()));
+                MySqlConnection readConnection = new MySqlConnection(connectionString);
+                readConnection.Open();
+                logOutput.AppendLine(String.Format("[{0}]       [-] Read connection to MySQL successfully opened", DateTime.Now.ToString()));
+
+                logOutput.AppendLine(String.Format("[{0}]       [+] Truncating old tokens", DateTime.Now.ToString()));
+                MySqlCommand truncateEmailBetsCommand = new MySqlCommand("TruncateEmailBets", readConnection)
+                {
+                    CommandType = CommandType.StoredProcedure
+                };
+                truncateEmailBetsCommand.ExecuteNonQuery();
 
                 logOutput.AppendLine(String.Format("[{0}]       [-] Getting today's matches", DateTime.Now.ToString()));
-                string todaysMatches = TodaysMatches(connection);
-
-                if (String.IsNullOrEmpty(todaysMatches))
+                if (!MatchesToday(readConnection))
                 {
                     logOutput.AppendLine(String.Format("[{0}]       [-] No matches today", DateTime.Now.ToString()));
                     logOutput.AppendLine(String.Format("[{0}]       [-] Job finished", DateTime.Now.ToString()));
@@ -50,6 +64,12 @@ namespace SendNotifications
                     return;
                 }
 
+                logOutput.AppendLine(String.Format("[{0}]       [-] Opening update connection to MySQL", DateTime.Now.ToString()));
+                MySqlConnection updateConnection = new MySqlConnection(connectionString);
+                updateConnection.Open();
+                logOutput.AppendLine(String.Format("[{0}]       [-] Update connection to MySQL successfully opened", DateTime.Now.ToString()));
+
+                logOutput.AppendLine(String.Format("[{0}]       [-] Establishing SMTP session", DateTime.Now.ToString()));
                 var fromAddress = new MailAddress(Environment.GetEnvironmentVariable("FROM_EMAIL"), Environment.GetEnvironmentVariable("FROM_NAME"));
                 string emailPassword = Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
 
@@ -62,15 +82,51 @@ namespace SendNotifications
                     UseDefaultCredentials = false,
                     Credentials = new NetworkCredential(fromAddress.Address, emailPassword)
                 };
+                logOutput.AppendLine(String.Format("[{0}]       [-] SMTP session established successfully", DateTime.Now.ToString()));
 
                 logOutput.AppendLine(String.Format("[{0}]       [-] Sending notifications", DateTime.Now.ToString()));
-                List<User> users = GetNotifyEmailMatchdays(connection);
+                List<User> users = GetNotifyEmailMatchdays(readConnection);
                 string subject = "Apostas do dia";
 
                 foreach (var user in users)
                 {
                     var toAddress = new MailAddress(user.Email, user.Name);
-                    string body = GetBody(user);
+
+                    MySqlCommand getTodaysBetsPerUserCommand;
+
+                    if (user.Notifications == (int)NotificationType.MissingBets)
+                    {
+                        getTodaysBetsPerUserCommand = new MySqlCommand("GetTodaysMissingBetsPerUser", readConnection)
+                        {
+                            CommandType = CommandType.StoredProcedure
+                        };
+                    }
+                    else if (user.Notifications == (int)NotificationType.AllBets)
+                    {
+                        getTodaysBetsPerUserCommand = new MySqlCommand("GetTodaysBetsPerUser", readConnection)
+                        {
+                            CommandType = CommandType.StoredProcedure
+                        };
+                    }
+                    else
+                    {
+                        logOutput.AppendLine(String.Format("[{0}]       [!] Error processing notifications for '" + user.Username + "'", DateTime.Now.ToString()));
+                        continue;
+                    }
+
+                    getTodaysBetsPerUserCommand.Parameters.Add(new MySqlParameter("User", user.Username));
+
+                    logOutput.AppendLine(String.Format("[{0}]       [-] Getting matches for '" + user.Username + "'", DateTime.Now.ToString()));
+                    MySqlDataReader getTodaysBetsPerUserReader = getTodaysBetsPerUserCommand.ExecuteReader();
+
+                    if (!getTodaysBetsPerUserReader.HasRows)
+                    {
+                        logOutput.AppendLine(String.Format("[{0}]       [-] No notification needed for '" + user.Username + "'", DateTime.Now.ToString()));
+                        continue;
+                    }
+
+                    logOutput.AppendLine(String.Format("[{0}]       [-] Generating email for '" + user.Username + "'", DateTime.Now.ToString()));
+                    string body = GetBody(updateConnection, user, getTodaysBetsPerUserReader);
 
                     using var message = new MailMessage(fromAddress, toAddress)
                     {
@@ -79,13 +135,18 @@ namespace SendNotifications
                         IsBodyHtml = true
                     };
 
-                    logOutput.AppendLine(String.Format("[{0}]       [+] Sending notification to '" + user.Name, DateTime.Now.ToString()));
+                    logOutput.AppendLine(String.Format("[{0}]       [+] Sending email to '" + user.Username + "'", DateTime.Now.ToString()));
                     smtp.Send(message);
                 }
 
-                logOutput.AppendLine(String.Format("[{0}]       [-] Closing connection to MySQL", DateTime.Now.ToString()));
-                connection.Close();
-                logOutput.AppendLine(String.Format("[{0}]       [-] Connection to MySQL successful closed", DateTime.Now.ToString()));
+                logOutput.AppendLine(String.Format("[{0}]       [-] Closing read connection to MySQL", DateTime.Now.ToString()));
+                readConnection.Close();
+                logOutput.AppendLine(String.Format("[{0}]       [-] Read connection to MySQL successful closed", DateTime.Now.ToString()));
+
+                logOutput.AppendLine(String.Format("[{0}]       [-] Closing update connection to MySQL", DateTime.Now.ToString()));
+                updateConnection.Close();
+                logOutput.AppendLine(String.Format("[{0}]       [-] Update connection to MySQL successful closed", DateTime.Now.ToString()));
+
                 logOutput.AppendLine(String.Format("[{0}]       [-] Job finished", DateTime.Now.ToString()));
             }
             catch (Exception ex)
@@ -97,7 +158,7 @@ namespace SendNotifications
             ProcessLogs(logOutput.ToString());
         }
 
-        private static string TodaysMatches(MySqlConnection connection)
+        private static bool MatchesToday(MySqlConnection connection)
         {
             MySqlCommand todaysMatchesCommand = new MySqlCommand("TodaysMatches", connection)
             {
@@ -105,16 +166,14 @@ namespace SendNotifications
             };
             MySqlDataReader todaysMatchesReader = todaysMatchesCommand.ExecuteReader();
 
-            string todaysMatches = null;
             if (todaysMatchesReader.HasRows)
             {
-                todaysMatchesReader.Read();
-                todaysMatches = Convert.ToString(todaysMatchesReader["TodaysMatches"]);
+                todaysMatchesReader.Close();
+                return true;
             }
 
             todaysMatchesReader.Close();
-
-            return todaysMatches;
+            return false;
         }
 
         private static void ProcessLogs(string logOutput)
@@ -163,25 +222,62 @@ namespace SendNotifications
             }
         }
 
-        private static string GetBody(User user)
+        private static string GetBody(MySqlConnection connection, User user, MySqlDataReader matches)
         {
             string name = user.Name.Split(' ')[0];
 
             StringBuilder body = new StringBuilder();
 
-            body.Append("Olá " + name);
+            body.Append(EmailHeader);
+            body.Append("Olá " + name + ",<br><br> Estas são as tuas apostas do dia:<br><br>");
+            body.Append(EmailTable);
 
-            if (user.SendEmailReminder)
+            while (matches.Read())
             {
+                string tokenHome = GetToken();
+                string tokenDraw = GetToken();
+                string tokenAway = GetToken();
 
+                string urlHome = BettingUrl + tokenHome;
+                string urlDraw = BettingUrl + tokenDraw;
+                string urlAway = BettingUrl + tokenAway;
+
+                UpdateEmailBets(connection, matches.GetString("IdmatchAPI"), user.Username, tokenHome, tokenDraw, tokenAway);
+
+                char result = matches.IsDBNull("Result") ? 'X' : matches.GetChar("Result");
+                string styleHome = result.Equals('H') ? " style=\"background-color: black; color: white\">" : ">";
+                string styleDraw = result.Equals('D') ? " style=\"background-color: black; color: white\">" : ">";
+                string styleAway = result.Equals('A') ? " style=\"background-color: black; color: white\">" : ">";
+
+                body.AppendLine("<tr style=\"box-sizing: border-box; page-break-inside: avoid;\">");
+                body.AppendLine("<td>&nbsp;" + matches.GetString("Hometeam") + " </td>");
+                body.AppendLine("<td" + styleHome + "&nbsp;<a href=\"" + urlHome + "\">" + matches.GetString("Oddshome") + "</a></td>");
+                body.AppendLine("<td" + styleDraw + "&nbsp;<a href=\"" + urlDraw + "\">" + matches.GetString("Oddsdraw") + "</a></td>");
+                body.AppendLine("<td" + styleAway + "&nbsp;<a href=\"" + urlAway + "\">" + matches.GetString("Oddsaway") + "</a></td>");
+                body.AppendLine("<td>&nbsp;" + matches.GetString("Awayteam") + "</td>");
+                body.AppendLine("<td> &nbsp; Data </td>");
+                body.AppendLine("</tr>");
             }
 
-            if (user.SendEmailChange)
-            {
-
-            }
+            body.Append(EmailFooter);
 
             return body.ToString();
+        }
+
+        private static void UpdateEmailBets(MySqlConnection connection, string IdmatchAPI, string username, string tokenHome, string tokenDraw, string tokenAway)
+        {
+            MySqlCommand command = new MySqlCommand("UpdateEmailBets", connection)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+
+            command.Parameters.Add(new MySqlParameter("TokenHome", tokenHome));
+            command.Parameters.Add(new MySqlParameter("TokenDraw", tokenDraw));
+            command.Parameters.Add(new MySqlParameter("TokenAway", tokenAway));
+            command.Parameters.Add(new MySqlParameter("Username", username));
+            command.Parameters.Add(new MySqlParameter("IdmatchAPI", IdmatchAPI));
+
+            command.ExecuteNonQuery();
         }
 
         private static List<User> GetNotifyEmailMatchdays(MySqlConnection connection)
@@ -201,8 +297,7 @@ namespace SendNotifications
                     Username = notifyEmailMatchdaysReader.GetString("UserName"),
                     Name = notifyEmailMatchdaysReader.GetString("Name"),
                     Email = notifyEmailMatchdaysReader.GetString("Email"),
-                    SendEmailReminder = Convert.ToBoolean(notifyEmailMatchdaysReader["SendEmailReminder"]),
-                    SendEmailChange = Convert.ToBoolean(notifyEmailMatchdaysReader["SendEmailChange"])
+                    Notifications = Convert.ToInt32(notifyEmailMatchdaysReader["Notifications"]),
                 });
             }
 
@@ -211,27 +306,24 @@ namespace SendNotifications
             return users;
         }
 
-        private static List<string> GetMatchdaysForNotifications(int lowerBound, int upperBound, MySqlConnection connection)
+        static string GetToken()
         {
-            MySqlCommand matchdaysForNotificationsCommand = new MySqlCommand("GetMatchdaysForNotifications", connection)
+            int i = 50;
+            const string valid = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+            StringBuilder res = new StringBuilder();
+            using (RNGCryptoServiceProvider rng = new RNGCryptoServiceProvider())
             {
-                CommandType = CommandType.StoredProcedure
-            };
+                byte[] uintBuffer = new byte[sizeof(uint)];
 
-            matchdaysForNotificationsCommand.Parameters.Add(new MySqlParameter("LowerBound", lowerBound));
-            matchdaysForNotificationsCommand.Parameters.Add(new MySqlParameter("UpperBound", upperBound));
-
-            MySqlDataReader matchdaysForNotificationsReader = matchdaysForNotificationsCommand.ExecuteReader();
-
-            List<string> matchdays = new List<string>();
-            while (matchdaysForNotificationsReader.Read())
-            {
-                matchdays.Add(matchdaysForNotificationsReader.GetString("Matchday"));
+                while (i-- > 0)
+                {
+                    rng.GetBytes(uintBuffer);
+                    uint num = BitConverter.ToUInt32(uintBuffer, 0);
+                    res.Append(valid[(int)(num % (uint)valid.Length)]);
+                }
             }
 
-            matchdaysForNotificationsReader.Close();
-
-            return matchdays;
+            return res.ToString();
         }
 
         private class User
@@ -239,8 +331,14 @@ namespace SendNotifications
             public string Username { get; set; }
             public string Name { get; set; }
             public string Email { get; set; }
-            public bool SendEmailReminder { get; set; }
-            public bool SendEmailChange { get; set; }
+            public int Notifications { get; set; }
+        }
+
+        enum NotificationType
+        {
+            NoNotifications,
+            MissingBets,
+            AllBets
         }
     }
 }

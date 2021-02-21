@@ -1,0 +1,13 @@
+﻿<table class="table table-sm table-hover" style="box-sizing: border-box;border-collapse: collapse!important;margin-bottom: 1rem;color: #212529;">
+	<table class="table table-sm table-hover" style="box-sizing: border-box;border-collapse: collapse!important;margin-bottom: 1rem;color: #212529;">
+		<thead style="box-sizing: border-box;display: table-header-group;">
+			<tr style="box-sizing: border-box;page-break-inside: avoid;">
+				<th align="center" scope="col" style="box-sizing: border-box;text-align: inherit;padding: .3rem;vertical-align: bottom;border-top: 1px solid #dee2e6;border-bottom: 2px solid #dee2e6;background-color: #fff!important;">Casa</th>
+				<th colspan="3" align="center" scope="col" style="box-sizing: border-box;text-align: inherit;padding: .3rem;vertical-align: bottom;border-top: 1px solid #dee2e6;border-bottom: 2px solid #dee2e6;background-color: #fff!important;">Resultado (H-D-A)</th>
+				<th align="center" scope="col" style="box-sizing: border-box;text-align: inherit;padding: .3rem;vertical-align: bottom;border-top: 1px solid #dee2e6;border-bottom: 2px solid #dee2e6;background-color: #fff!important;">Fora</th>
+				<th scope="col" style="box-sizing: border-box;text-align: inherit;padding: .3rem;vertical-align: bottom;border-top: 1px solid #dee2e6;border-bottom: 2px solid #dee2e6;background-color: #fff!important;">Data do Jogo</th>
+				<th scope="col" style="box-sizing: border-box;text-align: inherit;padding: .3rem;vertical-align: bottom;border-top: 1px solid #dee2e6;border-bottom: 2px solid #dee2e6;background-color: #fff!important;">Pontos</th>
+			</tr>
+		</thead>
+		<tbody style="box-sizing: border-box;">
+
