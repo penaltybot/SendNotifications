@@ -132,7 +132,8 @@ namespace SendNotifications
                     {
                         Subject = subject,
                         Body = body,
-                        IsBodyHtml = true
+                        IsBodyHtml = true,
+                        BodyEncoding = Encoding.UTF8
                     };
 
                     logOutput.AppendLine(String.Format("[{0}]       [+] Sending email to '" + user.Username + "'", DateTime.Now.ToString()));
@@ -228,9 +229,9 @@ namespace SendNotifications
 
             StringBuilder body = new StringBuilder();
 
-            body.Append(EmailHeader);
-            body.Append("Olá " + name + ",<br><br> Estas são as tuas apostas do dia:<br><br>");
-            body.Append(EmailTable);
+            body.AppendLine(EmailHeader);
+            body.AppendLine("Olá " + name + ",<br><br> Estas são as tuas apostas do dia:<br><br>");
+            body.AppendLine(EmailTable);
 
             while (matches.Read())
             {
@@ -259,7 +260,7 @@ namespace SendNotifications
                 body.AppendLine("</tr>");
             }
 
-            body.Append(EmailFooter);
+            body.AppendLine(EmailFooter);
 
             return body.ToString();
         }
