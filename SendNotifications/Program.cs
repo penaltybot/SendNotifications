@@ -132,8 +132,7 @@ namespace SendNotifications
                     {
                         Subject = subject,
                         Body = body,
-                        IsBodyHtml = true,
-                        BodyEncoding = Encoding.UTF8
+                        IsBodyHtml = true
                     };
 
                     logOutput.AppendLine(String.Format("[{0}]       [+] Sending email to '" + user.Username + "'", DateTime.Now.ToString()));
@@ -229,9 +228,9 @@ namespace SendNotifications
 
             StringBuilder body = new StringBuilder();
 
-            body.AppendLine(EmailHeader);
-            body.AppendLine("Olá " + name + ",<br><br> Estas são as tuas apostas do dia:<br><br>");
-            body.AppendLine(EmailTable);
+            body.Append(EmailHeader);
+            body.Append(name);
+            body.Append(EmailTable);
 
             while (matches.Read())
             {
@@ -250,17 +249,17 @@ namespace SendNotifications
                 string styleDraw = result.Equals('D') ? " style=\"background-color: black; color: white\">" : ">";
                 string styleAway = result.Equals('A') ? " style=\"background-color: black; color: white\">" : ">";
 
-                body.AppendLine("<tr style=\"box-sizing: border-box; page-break-inside: avoid;\">");
-                body.AppendLine("<td>&nbsp;" + matches.GetString("Hometeam") + " </td>");
-                body.AppendLine("<td" + styleHome + "&nbsp;<a href=\"" + urlHome + "\">" + matches.GetString("Oddshome") + "</a></td>");
-                body.AppendLine("<td" + styleDraw + "&nbsp;<a href=\"" + urlDraw + "\">" + matches.GetString("Oddsdraw") + "</a></td>");
-                body.AppendLine("<td" + styleAway + "&nbsp;<a href=\"" + urlAway + "\">" + matches.GetString("Oddsaway") + "</a></td>");
-                body.AppendLine("<td>&nbsp;" + matches.GetString("Awayteam") + "</td>");
-                body.AppendLine("<td> &nbsp; Data </td>");
-                body.AppendLine("</tr>");
+                body.Append("<tr style=\"box-sizing: border-box; page-break-inside: avoid;\">");
+                body.Append("<td>&nbsp;" + matches.GetString("Hometeam") + " </td>");
+                body.Append("<td" + styleHome + "&nbsp;<a href=\"" + urlHome + "\">" + matches.GetString("Oddshome") + "</a></td>");
+                body.Append("<td" + styleDraw + "&nbsp;<a href=\"" + urlDraw + "\">" + matches.GetString("Oddsdraw") + "</a></td>");
+                body.Append("<td" + styleAway + "&nbsp;<a href=\"" + urlAway + "\">" + matches.GetString("Oddsaway") + "</a></td>");
+                body.Append("<td>&nbsp;" + matches.GetString("Awayteam") + "</td>");
+                body.Append("<td> &nbsp; Data </td>");
+                body.Append("</tr>");
             }
 
-            body.AppendLine(EmailFooter);
+            body.Append(EmailFooter);
 
             return body.ToString();
         }
