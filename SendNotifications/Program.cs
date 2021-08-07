@@ -128,6 +128,8 @@ namespace SendNotifications
                     logOutput.AppendLine(String.Format("[{0}]       [-] Generating email for '" + user.Username + "'", DateTime.Now.ToString()));
                     string body = GetBody(updateConnection, user, getTodaysBetsPerUserReader);
 
+                    getTodaysBetsPerUserReader.Close();
+
                     using var message = new MailMessage(fromAddress, toAddress)
                     {
                         Subject = subject,
