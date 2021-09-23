@@ -257,7 +257,7 @@ namespace SendNotifications
                 body.Append("<td" + styleDraw + "&nbsp;<a href=\"" + urlDraw + "\">" + matches.GetString("Oddsdraw") + "</a></td>");
                 body.Append("<td" + styleAway + "&nbsp;<a href=\"" + urlAway + "\">" + matches.GetString("Oddsaway") + "</a></td>");
                 body.Append("<td>&nbsp;" + matches.GetString("Awayteam") + "</td>");
-                body.Append("<td> &nbsp; Data </td>");
+                body.Append("<td>&nbsp;" + matches.GetString("UtcDate") + "</td>");
                 body.Append("</tr>");
             }
 
