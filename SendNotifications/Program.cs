@@ -1,12 +1,15 @@
 using MySql.Data.MySqlClient;
+using RestSharp;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Mail;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 
 namespace SendNotifications
 {
@@ -16,7 +19,7 @@ namespace SendNotifications
         public static string EmailTable = File.ReadAllText("/app/EmailTable");
         public static string EmailFooter = File.ReadAllText("/app/EmailFooter");
 
-        public static string BettingUrl;
+        public static string WebSiteLocation;
 
         public static void Main()
         {
@@ -40,8 +43,6 @@ namespace SendNotifications
                     Environment.GetEnvironmentVariable("DB_DATABASE")
                     });
 
-                BettingUrl = Environment.GetEnvironmentVariable("BETTING_URL");
-
                 logOutput.AppendLine(String.Format("[{0}]       [-] Opening read connection to MySQL", DateTime.Now.ToString()));
                 MySqlConnection readConnection = new MySqlConnection(connectionString);
                 readConnection.Open();
@@ -55,7 +56,7 @@ namespace SendNotifications
                 truncateEmailBetsCommand.ExecuteNonQuery();
 
                 logOutput.AppendLine(String.Format("[{0}]       [-] Getting today's matches", DateTime.Now.ToString()));
-                if (!MatchesToday(readConnection))
+                if (false) //!MatchesToday(readConnection)
                 {
                     logOutput.AppendLine(String.Format("[{0}]       [-] No matches today", DateTime.Now.ToString()));
                     logOutput.AppendLine(String.Format("[{0}]       [-] Job finished", DateTime.Now.ToString()));
@@ -64,10 +65,23 @@ namespace SendNotifications
                     return;
                 }
 
-                logOutput.AppendLine(String.Format("[{0}]       [-] Opening update connection to MySQL", DateTime.Now.ToString()));
+                logOutput.AppendLine(String.Format("[{0}]       [-] Getting global constants", DateTime.Now.ToString()));
+                Dictionary<string, string> globalConstants = GetGlobalConstants(readConnection);
+                var apiUrlTelegram = globalConstants["API_URL_TELEGRAM"];
+                var telegramBotToken = globalConstants["TOKEN_BOT_TELEGRAM"];
+                var telegramChatId = globalConstants["CHAT_ID_TELEGRAM"];
+                var reportUrl = globalConstants["WEBSITE_LOCATION"];
+                WebSiteLocation = globalConstants["WEBSITE_LOCATION"];
+
+
+                logOutput.AppendLine(String.Format("[{0}]       [-] Opening additional connections to MySQL", DateTime.Now.ToString()));
                 MySqlConnection updateConnection = new MySqlConnection(connectionString);
                 updateConnection.Open();
-                logOutput.AppendLine(String.Format("[{0}]       [-] Update connection to MySQL successfully opened", DateTime.Now.ToString()));
+                MySqlConnection betsPerUserConnection = new MySqlConnection(connectionString);
+                betsPerUserConnection.Open();
+                MySqlConnection missingBetsPerUserConnection = new MySqlConnection(connectionString);
+                missingBetsPerUserConnection.Open();
+                logOutput.AppendLine(String.Format("[{0}]       [-] Additional connections to MySQL successfully opened", DateTime.Now.ToString()));
 
                 logOutput.AppendLine(String.Format("[{0}]       [-] Establishing SMTP session", DateTime.Now.ToString()));
                 var fromAddress = new MailAddress(Environment.GetEnvironmentVariable("FROM_EMAIL"), Environment.GetEnvironmentVariable("FROM_NAME"));
@@ -84,61 +98,73 @@ namespace SendNotifications
                 };
                 logOutput.AppendLine(String.Format("[{0}]       [-] SMTP session established successfully", DateTime.Now.ToString()));
 
-                logOutput.AppendLine(String.Format("[{0}]       [-] Sending notifications", DateTime.Now.ToString()));
+                logOutput.AppendLine(String.Format("[{0}]       [-] Getting users", DateTime.Now.ToString()));
                 List<User> users = GetNotifyEmailMatchdays(readConnection);
+
+                logOutput.AppendLine(String.Format("[{0}]       [-] Closing read connection to MySQL", DateTime.Now.ToString()));
+                logOutput.AppendLine(String.Format("[{0}]       [-] Read connection to MySQL successful closed", DateTime.Now.ToString()));
+
                 string subject = "Apostas do dia";
 
                 foreach (var user in users)
                 {
                     var toAddress = new MailAddress(user.Email, user.Name);
+                    logOutput.AppendLine(String.Format("[{0}]       [-] Getting matches", DateTime.Now.ToString()));
+                    var matches = GetMatches(readConnection, user.Username, logOutput);
+                    var missingMatches = matches.Where(match => match.Result == null).ToList();
+                    UpdateEmailBets(updateConnection, user.Username, matches);
 
-                    MySqlCommand getTodaysBetsPerUserCommand;
+                    if ((user.EmailNotifications == (int)NotificationType.AllBets) || (user.EmailNotifications == (int)NotificationType.MissingBets && HasMissingBets(matches)))
+                    {
+                        logOutput.AppendLine(String.Format("[{0}]       [-] Generating email body for '" + user.Username + "'", DateTime.Now.ToString()));
+                        string emailBody;
 
-                    if (user.Notifications == (int)NotificationType.MissingBets)
-                    {
-                        getTodaysBetsPerUserCommand = new MySqlCommand("GetTodaysMissingBetsPerUser", readConnection)
+                        if (user.EmailNotifications == (int)NotificationType.AllBets)
                         {
-                            CommandType = CommandType.StoredProcedure
-                        };
-                    }
-                    else if (user.Notifications == (int)NotificationType.AllBets)
-                    {
-                        getTodaysBetsPerUserCommand = new MySqlCommand("GetTodaysBetsPerUser", readConnection)
+                            emailBody = GetEmailBody(user, matches);
+                        }
+                        else
                         {
-                            CommandType = CommandType.StoredProcedure
+                            emailBody = GetEmailBody(user, missingMatches);
+                        }
+
+                        using var message = new MailMessage(fromAddress, toAddress)
+                        {
+                            Subject = subject,
+                            Body = emailBody,
+                            IsBodyHtml = true
                         };
+
+                        logOutput.AppendLine(String.Format("[{0}]       [+] Sending email to '" + user.Username + "'", DateTime.Now.ToString()));
+                        smtp.Send(message);
                     }
                     else
                     {
-                        logOutput.AppendLine(String.Format("[{0}]       [!] Error processing notifications for '" + user.Username + "'", DateTime.Now.ToString()));
-                        continue;
+                        logOutput.AppendLine(String.Format("[{0}]       [-] No email notification needed for '" + user.Username + "'", DateTime.Now.ToString()));
                     }
 
-                    getTodaysBetsPerUserCommand.Parameters.Add(new MySqlParameter("User", user.Username));
 
-                    logOutput.AppendLine(String.Format("[{0}]       [-] Getting matches for '" + user.Username + "'", DateTime.Now.ToString()));
-                    MySqlDataReader getTodaysBetsPerUserReader = getTodaysBetsPerUserCommand.ExecuteReader();
-
-                    if (!getTodaysBetsPerUserReader.HasRows)
+                    if ((user.TelegramNotifications == (int)NotificationType.AllBets) || (user.TelegramNotifications == (int)NotificationType.MissingBets && HasMissingBets(matches)))
                     {
-                        logOutput.AppendLine(String.Format("[{0}]       [-] No notification needed for '" + user.Username + "'", DateTime.Now.ToString()));
-                        continue;
+                        logOutput.AppendLine(String.Format("[{0}]       [-] Generating telegram body for '" + user.Username + "'", DateTime.Now.ToString()));
+                        string telegramBody;
+
+                        if (user.TelegramNotifications == (int)NotificationType.AllBets)
+                        {
+                            telegramBody = GetTelegramBody(user, matches);
+                        }
+                        else
+                        {
+                            telegramBody = GetTelegramBody(user, missingMatches);
+                        }
+
+                        logOutput.AppendLine(String.Format("[{0}]       [+] Sending telegram notification to '" + user.Username + "'", DateTime.Now.ToString()));
+                        SendTelegramMessage(apiUrlTelegram, telegramBotToken, user.Telegram, telegramBody);
                     }
-
-                    logOutput.AppendLine(String.Format("[{0}]       [-] Generating email for '" + user.Username + "'", DateTime.Now.ToString()));
-                    string body = GetBody(updateConnection, user, getTodaysBetsPerUserReader);
-
-                    getTodaysBetsPerUserReader.Close();
-
-                    using var message = new MailMessage(fromAddress, toAddress)
+                    else
                     {
-                        Subject = subject,
-                        Body = body,
-                        IsBodyHtml = true
-                    };
-
-                    logOutput.AppendLine(String.Format("[{0}]       [+] Sending email to '" + user.Username + "'", DateTime.Now.ToString()));
-                    smtp.Send(message);
+                        logOutput.AppendLine(String.Format("[{0}]       [-] No telegram notification needed for '" + user.Username + "'", DateTime.Now.ToString()));
+                    }
                 }
 
                 logOutput.AppendLine(String.Format("[{0}]       [-] Closing read connection to MySQL", DateTime.Now.ToString()));
@@ -158,6 +184,98 @@ namespace SendNotifications
             }
 
             ProcessLogs(logOutput.ToString());
+        }
+
+        private static string GetTelegramBody(User user, List<Match> matches)
+        {
+            string name = user.Name.Split(' ')[0];
+            List<string> fullBody = new List<string>();
+            StringBuilder header = new StringBuilder();
+            StringBuilder body = new StringBuilder();
+            StringBuilder footer = new StringBuilder();
+
+            header.Append("Olá ");
+            header.Append(name);
+            header.Append(",\nEstas são as tuas apostas do dia:");
+
+            fullBody.Add(header.ToString());
+            foreach (var match in matches)
+            {
+                string urlHome = WebSiteLocation + "/Home/SubmitEmailBet?token=" + match.TokenHome;
+                string urlDraw = WebSiteLocation + "/Home/SubmitEmailBet?token=" + match.TokenDraw;
+                string urlAway = WebSiteLocation + "/Home/SubmitEmailBet?token=" + match.TokenAway;
+
+                char result = match.Result == null ? 'X' : Convert.ToChar(match.Result);
+                string styleHome = result.Equals('H') ? "[<a href=\"" + urlHome + "\">" + match.OddsHome + "</a>]" : "<a href=\"" + urlHome + "\">" + match.OddsHome + "</a>";
+                string styleDraw = result.Equals('D') ? "[<a href=\"" + urlDraw + "\">" + match.OddsDraw + "</a>]" : "<a href=\"" + urlDraw + "\">" + match.OddsDraw + "</a>";
+                string styleAway = result.Equals('A') ? "[<a href=\"" + urlAway + "\">" + match.OddsAway + "</a>]" : "<a href=\"" + urlAway + "\">" + match.OddsAway + "</a>";
+                string fullOdds = "| " + styleHome + " | " + styleDraw + " | " + styleAway + " |";
+
+                StringBuilder row = new StringBuilder();
+
+                header.Append("\n\n<b>" + match.Hometeam + "</b> - <b>" + match.Awayteam + "</b> : " + match.UtcDate + "\n");
+                header.Append(fullOdds);
+            }
+
+            header.Append("\n\nNão te esqueças que podes apostar ao carregar em cima dos links deste e-mail.\n\n");
+            header.Append("Boa sorte!\nThe Penalty Team");
+
+            return header.ToString();
+        }
+
+        private static bool HasMissingBets(List<Match> matches)
+        {
+            return matches.Count(match => match.Result == null) > 0;
+        }
+
+        private static List<Match> GetMatches(MySqlConnection connection, string username, StringBuilder logOutput)
+        {
+            MySqlCommand getNotificationMatchesCommand = new MySqlCommand("GetNotificationMatches", connection)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+            getNotificationMatchesCommand.Parameters.Add(new MySqlParameter("User", username));
+
+            MySqlDataReader getNotificationMatchesReader = getNotificationMatchesCommand.ExecuteReader();
+
+            List<Match> matches = new List<Match>();
+            while (getNotificationMatchesReader.Read())
+            {
+                if (getNotificationMatchesReader.IsDBNull("Oddshome"))
+                {
+                    logOutput.AppendLine(String.Format("[{0}]       [!] No odds for 'Home' for FixtureId='{1}'; Skipping...", DateTime.Now.ToString(), getNotificationMatchesReader.GetString("IdmatchAPI")));
+                    continue;
+                }
+                if (getNotificationMatchesReader.IsDBNull("Oddsdraw"))
+                {
+                    logOutput.AppendLine(String.Format("[{0}]       [!] No odds for 'Draw' for FixtureId='{1}'; Skipping...", DateTime.Now.ToString(), getNotificationMatchesReader.GetString("IdmatchAPI")));
+                    continue;
+                }
+                if (getNotificationMatchesReader.IsDBNull("Oddsaway"))
+                {
+                    logOutput.AppendLine(String.Format("[{0}]       [!] No odds for 'Away' for FixtureId='{1}'; Skipping...", DateTime.Now.ToString(), getNotificationMatchesReader.GetString("IdmatchAPI")));
+                    continue;
+                }
+
+                matches.Add(new Match()
+                {
+                    IdmatchAPI = getNotificationMatchesReader.GetString("IdmatchAPI"),
+                    Hometeam = getNotificationMatchesReader.GetString("Hometeam"),
+                    Awayteam = getNotificationMatchesReader.GetString("Awayteam"),
+                    OddsHome = getNotificationMatchesReader.GetString("Oddshome"),
+                    OddsDraw = getNotificationMatchesReader.GetString("Oddsdraw"),
+                    OddsAway = getNotificationMatchesReader.GetString("Oddsaway"),
+                    TokenHome = GetToken(),
+                    TokenDraw = GetToken(),
+                    TokenAway = GetToken(),
+                    UtcDate = getNotificationMatchesReader.GetString("UtcDate"),
+                    Result = getNotificationMatchesReader.GetChar("Result")
+                });
+            }
+
+            getNotificationMatchesReader.Close();
+
+            return matches;
         }
 
         private static bool MatchesToday(MySqlConnection connection)
@@ -224,7 +342,7 @@ namespace SendNotifications
             }
         }
 
-        private static string GetBody(MySqlConnection connection, User user, MySqlDataReader matches)
+        private static string GetEmailBody(User user, List<Match> matches)
         {
             string name = user.Name.Split(' ')[0];
 
@@ -234,30 +352,24 @@ namespace SendNotifications
             body.Append(name);
             body.Append(EmailTable);
 
-            while (matches.Read())
+            foreach (var match in matches)
             {
-                string tokenHome = GetToken();
-                string tokenDraw = GetToken();
-                string tokenAway = GetToken();
+                string urlHome = WebSiteLocation + "/Home/SubmitEmailBet?token=" + match.TokenHome;
+                string urlDraw = WebSiteLocation + "/Home/SubmitEmailBet?token=" + match.TokenDraw;
+                string urlAway = WebSiteLocation + "/Home/SubmitEmailBet?token=" + match.TokenAway;
 
-                string urlHome = BettingUrl + tokenHome;
-                string urlDraw = BettingUrl + tokenDraw;
-                string urlAway = BettingUrl + tokenAway;
-
-                UpdateEmailBets(connection, matches.GetString("IdmatchAPI"), user.Username, tokenHome, tokenDraw, tokenAway);
-
-                char result = matches.IsDBNull("Result") ? 'X' : matches.GetChar("Result");
+                char result = match.Result == null ? 'X' : Convert.ToChar(match.Result);
                 string styleHome = result.Equals('H') ? " style=\"background-color: black; color: white\">" : ">";
                 string styleDraw = result.Equals('D') ? " style=\"background-color: black; color: white\">" : ">";
                 string styleAway = result.Equals('A') ? " style=\"background-color: black; color: white\">" : ">";
 
                 body.Append("<tr style=\"box-sizing: border-box; page-break-inside: avoid;\">");
-                body.Append("<td>&nbsp;" + matches.GetString("Hometeam") + " </td>");
-                body.Append("<td" + styleHome + "&nbsp;<a href=\"" + urlHome + "\">" + matches.GetString("Oddshome") + "</a></td>");
-                body.Append("<td" + styleDraw + "&nbsp;<a href=\"" + urlDraw + "\">" + matches.GetString("Oddsdraw") + "</a></td>");
-                body.Append("<td" + styleAway + "&nbsp;<a href=\"" + urlAway + "\">" + matches.GetString("Oddsaway") + "</a></td>");
-                body.Append("<td>&nbsp;" + matches.GetString("Awayteam") + "</td>");
-                body.Append("<td>&nbsp;" + matches.GetString("UtcDate") + "</td>");
+                body.Append("<td>&nbsp;" + match.Hometeam + " </td>");
+                body.Append("<td" + styleHome + "&nbsp;<a href=\"" + urlHome + "\">" + match.OddsHome + "</a></td>");
+                body.Append("<td" + styleDraw + "&nbsp;<a href=\"" + urlDraw + "\">" + match.OddsDraw + "</a></td>");
+                body.Append("<td" + styleAway + "&nbsp;<a href=\"" + urlAway + "\">" + match.OddsAway + "</a></td>");
+                body.Append("<td>&nbsp;" + match.Awayteam + "</td>");
+                body.Append("<td>&nbsp;" + match.UtcDate + "</td>");
                 body.Append("</tr>");
             }
 
@@ -266,21 +378,59 @@ namespace SendNotifications
             return body.ToString();
         }
 
-        private static void UpdateEmailBets(MySqlConnection connection, string IdmatchAPI, string username, string tokenHome, string tokenDraw, string tokenAway)
+        private static void SendTelegramMessage(string apiUrlTelegram, string telegramBotToken, string telegramChatId, string body)
         {
-            MySqlCommand command = new MySqlCommand("UpdateEmailBets", connection)
+            var apiTelegramUrl = new RestClient(apiUrlTelegram + telegramBotToken + "/sendMessage");
+
+            var apiTelegramRequest = new RestRequest();
+            apiTelegramRequest.AddQueryParameter("chat_id", telegramChatId);
+            apiTelegramRequest.AddQueryParameter("text", body);
+            apiTelegramRequest.AddQueryParameter("parse_mode", "HTML");
+
+            Thread.Sleep(5000);
+            apiTelegramUrl.Execute(apiTelegramRequest);
+        }
+
+        private static void UpdateEmailBets(MySqlConnection connection, string username, List<Match> matches)
+        {
+            foreach (var match in matches)
+            {
+                MySqlCommand command = new MySqlCommand("UpdateEmailBets", connection)
+                {
+                    CommandType = CommandType.StoredProcedure
+                };
+
+                command.Parameters.Add(new MySqlParameter("IdmatchAPI", match.IdmatchAPI));
+                command.Parameters.Add(new MySqlParameter("Username", username));
+                command.Parameters.Add(new MySqlParameter("TokenHome", match.TokenHome));
+                command.Parameters.Add(new MySqlParameter("TokenDraw", match.TokenDraw));
+                command.Parameters.Add(new MySqlParameter("TokenAway", match.TokenAway));
+
+                command.ExecuteNonQuery();
+            }
+        }
+
+        private static Dictionary<string, string> GetGlobalConstants(MySqlConnection connection)
+        {
+            MySqlCommand globalConstantsCommand = new MySqlCommand("GetGlobalConstants", connection)
             {
                 CommandType = CommandType.StoredProcedure
             };
+            MySqlDataReader globalConstantsReader = globalConstantsCommand.ExecuteReader();
 
-            command.Parameters.Add(new MySqlParameter("TokenHome", tokenHome));
-            command.Parameters.Add(new MySqlParameter("TokenDraw", tokenDraw));
-            command.Parameters.Add(new MySqlParameter("TokenAway", tokenAway));
-            command.Parameters.Add(new MySqlParameter("Username", username));
-            command.Parameters.Add(new MySqlParameter("IdmatchAPI", IdmatchAPI));
+            Dictionary<string, string> globalConstants = new Dictionary<string, string>();
+            while (globalConstantsReader.Read())
+            {
+                globalConstants.Add(
+                    globalConstantsReader["Constant"].ToString(),
+                    globalConstantsReader["Value"].ToString());
+            }
 
-            command.ExecuteNonQuery();
+            globalConstantsReader.Close();
+
+            return globalConstants;
         }
+
 
         private static List<User> GetNotifyEmailMatchdays(MySqlConnection connection)
         {
@@ -299,7 +449,9 @@ namespace SendNotifications
                     Username = notifyEmailMatchdaysReader.GetString("UserName"),
                     Name = notifyEmailMatchdaysReader.GetString("Name"),
                     Email = notifyEmailMatchdaysReader.GetString("Email"),
-                    Notifications = Convert.ToInt32(notifyEmailMatchdaysReader["Notifications"]),
+                    Telegram = notifyEmailMatchdaysReader.GetString("Telegram"),
+                    EmailNotifications = Convert.ToInt32(notifyEmailMatchdaysReader["EmailNotifications"]),
+                    TelegramNotifications = Convert.ToInt32(notifyEmailMatchdaysReader["TelegramNotifications"])
                 });
             }
 
@@ -310,7 +462,7 @@ namespace SendNotifications
 
         static string GetToken()
         {
-            int i = 50;
+            int i = 100;
             const string valid = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
             StringBuilder res = new StringBuilder();
             using (RNGCryptoServiceProvider rng = new RNGCryptoServiceProvider())
@@ -333,7 +485,25 @@ namespace SendNotifications
             public string Username { get; set; }
             public string Name { get; set; }
             public string Email { get; set; }
-            public int Notifications { get; set; }
+            public string Telegram { get; set; }
+            public int EmailNotifications { get; set; }
+            public int TelegramNotifications { get; set; }
+        }
+
+        private class Match
+        {
+            public string IdmatchAPI { get; set; }
+            public string Hometeam { get; set; }
+            public string Awayteam { get; set; }
+            public string OddsHome { get; set; }
+            public string OddsDraw { get; set; }
+            public string OddsAway { get; set; }
+            public string TokenHome { get; set; }
+            public string TokenDraw { get; set; }
+            public string TokenAway { get; set; }
+
+            public string UtcDate { get; set; }
+            public char? Result { get; set; }
         }
 
         enum NotificationType
@@ -341,6 +511,21 @@ namespace SendNotifications
             NoNotifications,
             MissingBets,
             AllBets
+        }
+
+        public static StringBuilder ReplaceSubstring(StringBuilder stringBuilder, int index, string replacement)
+        {
+            if (index + replacement.Length > stringBuilder.Length)
+            {
+                throw new ArgumentOutOfRangeException();
+            }
+
+            for (int i = 0; i < replacement.Length; ++i)
+            {
+                stringBuilder[index + i] = replacement[i];
+            }
+
+            return stringBuilder;
         }
     }
 }
