@@ -19,6 +19,10 @@ namespace SendNotifications
         public static string EmailTable = File.ReadAllText("/app/EmailTable");
         public static string EmailFooter = File.ReadAllText("/app/EmailFooter");
 
+        public static string TelegramHeader = File.ReadAllText("/app/TelegramHeader");
+        public static string TelegramFrame = File.ReadAllText("/app/TelegramFrame");
+        public static string TelegramFooter = File.ReadAllText("/app/TelegramFooter");
+
         public static string WebSiteLocation;
 
         public static void Main()
@@ -56,7 +60,7 @@ namespace SendNotifications
                 truncateEmailBetsCommand.ExecuteNonQuery();
 
                 logOutput.AppendLine(String.Format("[{0}]       [-] Getting today's matches", DateTime.Now.ToString()));
-                if (false) //!MatchesToday(readConnection)
+                if (!MatchesToday(readConnection))
                 {
                     logOutput.AppendLine(String.Format("[{0}]       [-] No matches today", DateTime.Now.ToString()));
                     logOutput.AppendLine(String.Format("[{0}]       [-] Job finished", DateTime.Now.ToString()));
@@ -189,16 +193,12 @@ namespace SendNotifications
         private static string GetTelegramBody(User user, List<Match> matches)
         {
             string name = user.Name.Split(' ')[0];
-            List<string> fullBody = new List<string>();
-            StringBuilder header = new StringBuilder();
             StringBuilder body = new StringBuilder();
-            StringBuilder footer = new StringBuilder();
 
-            header.Append("Olá ");
-            header.Append(name);
-            header.Append(",\nEstas são as tuas apostas do dia:");
+            body.Append(TelegramHeader);
+            body.Append(name);
+            body.Append(TelegramFrame);
 
-            fullBody.Add(header.ToString());
             foreach (var match in matches)
             {
                 string urlHome = WebSiteLocation + "/Home/SubmitEmailBet?token=" + match.TokenHome;
@@ -209,18 +209,17 @@ namespace SendNotifications
                 string styleHome = result.Equals('H') ? "[<a href=\"" + urlHome + "\">" + match.OddsHome + "</a>]" : "<a href=\"" + urlHome + "\">" + match.OddsHome + "</a>";
                 string styleDraw = result.Equals('D') ? "[<a href=\"" + urlDraw + "\">" + match.OddsDraw + "</a>]" : "<a href=\"" + urlDraw + "\">" + match.OddsDraw + "</a>";
                 string styleAway = result.Equals('A') ? "[<a href=\"" + urlAway + "\">" + match.OddsAway + "</a>]" : "<a href=\"" + urlAway + "\">" + match.OddsAway + "</a>";
-                string fullOdds = "| " + styleHome + " | " + styleDraw + " | " + styleAway + " |";
+                string fullOdds = "|  " + styleHome + "  |  " + styleDraw + "  |  " + styleAway + "  |";
 
-                StringBuilder row = new StringBuilder();
-
-                header.Append("\n\n<b>" + match.Hometeam + "</b> - <b>" + match.Awayteam + "</b> : " + match.UtcDate + "\n");
-                header.Append(fullOdds);
+                body.Append("\n\n<b>" + match.Hometeam + "</b> - <b>" + match.Awayteam + "</b> : " + match.UtcDate + "\n");
+                body.Append(fullOdds);
             }
 
-            header.Append("\n\nNão te esqueças que podes apostar ao carregar em cima dos links deste e-mail.\n\n");
-            header.Append("Boa sorte!\nThe Penalty Team");
+            body.Append("\n\n");
+            body.Append(TelegramFooter);
+            body.Append("\n\n");
 
-            return header.ToString();
+            return body.ToString();
         }
 
         private static bool HasMissingBets(List<Match> matches)
