@@ -257,7 +257,7 @@ namespace SendNotifications
                 }
 
                 char? result = '-';
-                if (getNotificationMatchesReader.IsDBNull("Result"))
+                if (!getNotificationMatchesReader.IsDBNull("Result"))
                 {
                     result = getNotificationMatchesReader.GetChar("Result");
                 }
