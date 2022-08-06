@@ -256,6 +256,12 @@ namespace SendNotifications
                     continue;
                 }
 
+                char? result = '-';
+                if (getNotificationMatchesReader.IsDBNull("Result"))
+                {
+                    result = getNotificationMatchesReader.GetChar("Result");
+                }
+
                 matches.Add(new Match()
                 {
                     IdmatchAPI = getNotificationMatchesReader.GetString("IdmatchAPI"),
@@ -268,7 +274,7 @@ namespace SendNotifications
                     TokenDraw = GetToken(),
                     TokenAway = GetToken(),
                     UtcDate = getNotificationMatchesReader.GetString("UtcDate"),
-                    Result = getNotificationMatchesReader.GetChar("Result")
+                    Result = result
                 });
             }
 
