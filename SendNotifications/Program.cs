@@ -391,6 +391,7 @@ namespace SendNotifications
             apiTelegramRequest.AddQueryParameter("chat_id", telegramChatId);
             apiTelegramRequest.AddQueryParameter("text", body);
             apiTelegramRequest.AddQueryParameter("parse_mode", "HTML");
+            apiTelegramRequest.AddQueryParameter("disable_web_page_preview", true);
 
             Thread.Sleep(5000);
             apiTelegramUrl.Execute(apiTelegramRequest);
